@@ -8,46 +8,9 @@
 
 using namespace std;
 
-#ifndef htonll
-#if __BYTE_ORDER == __BIG_ENDIAN
-    #define htonll(x) (x)
-    #define ntohll(x) (x)
-#else
-    #define htonll(x) (((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-    #define ntohll(x) (((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-#endif
-#endif
-
-
 int logical_clock = 0;
 int timestamp = 0;
 int seqNo = 0;
-
-typedef struct {
-    uint16_t magic;
-    uint8_t version;
-    uint8_t command;
-    int32_t sequence_number;
-    int32_t session_id;
-    int64_t logical_clock;
-    int64_t timestamp;
-} UAP_header;
-
-void addHeaders(char* buff, string payload, int command, int seqNo, int sessionID)
-{
-    UAP_header header;
-    header.magic = htons(0xC461);
-    header.version = 1;
-    header.command = command;
-    header.sequence_number = htonl(seqNo);
-    header.session_id = htonl(sessionID);
-    header.logical_clock = htonll(logical_clock);
-    header.timestamp = htonll(timestamp);
-
-    memcpy(buff, &header, sizeof(UAP_header));
-
-    memcpy(buff + sizeof(UAP_header), payload.c_str(), payload.length());
-}
 
 int main(int argc, char** argv)
 {
