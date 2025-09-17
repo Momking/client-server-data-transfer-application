@@ -8,6 +8,52 @@
 
 using namespace std;
 
+#ifndef htonll
+#if __BYTE_ORDER == __BIG_ENDIAN
+    #define htonll(x) (x)
+    #define ntohll(x) (x)
+#else
+    #define htonll(x) (((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
+    #define ntohll(x) (((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
+#endif
+#endif
+
+
+typedef struct {
+    uint16_t magic;
+    uint8_t version;
+    uint8_t command;
+    int32_t sequence_number;
+    int32_t session_id;
+    int64_t logical_clock;
+    int64_t timestamp;
+} UAP_header;
+
+void receivedPacket(char* buffer, int n){
+    if (n > 0 && n >= sizeof(UAP_header)) {
+        UAP_header* receivedHeader = (UAP_header*)buffer;
+
+        uint16_t magic = ntohs(receivedHeader->magic);
+        int32_t seq = ntohl(receivedHeader->sequence_number);
+        int64_t ts = ntohll(receivedHeader->timestamp);
+
+        cout << "--- Received Header ---" << endl;
+        cout << "Magic: 0x" << hex << magic << dec << endl;
+        cout << "Sequence: " << seq << endl;
+        cout << "Timestamp: " << ts << endl;
+
+        int payloadSize = n - sizeof(UAP_header);
+        if (payloadSize > 0) {
+            string payload(buffer + sizeof(UAP_header), payloadSize);
+            cout << "Payload: \"" << payload << "\"" << endl;
+        }
+    }else{
+        cout << "No header!!!" << endl;
+        buffer[n] = '\0';
+        cout << buffer << endl;
+    }
+}
+
 
 void sendResponse(int serverSocket, const sockaddr_in& clientAddress, const string& message) {
     ssize_t bytesSent = sendto(serverSocket, message.c_str(), message.length(), 0,
@@ -51,7 +97,7 @@ int main (int argc, char** argv)
 
     while (true)
     {
-        char buffer[50];
+        char buffer[1024];
         sockaddr_in clientAddress;
         socklen_t size = sizeof(clientAddress);
 
@@ -63,11 +109,8 @@ int main (int argc, char** argv)
             perror("ERROR on recvfrom");
             continue;
         }
-        
-        cout << "--------------------------------" << endl;
-        cout << "Received " << n << " bytes." << endl;
-        buffer[n] = '\0';
-        cout << "Message: " << buffer << endl;
+        cout << "n: " << n << endl;
+        receivedPacket(buffer, n);
 
         sendResponse(serverSocket, clientAddress, "Alive");
     }
