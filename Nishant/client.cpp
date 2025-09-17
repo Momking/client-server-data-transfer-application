@@ -34,5 +34,18 @@ int main(int argc, char** argv)
     if(sent < 0) { perror("sendto"); return 1; }
     else { cout << "Sent " << sent << " bytes" << endl; }
 
+    char receiveBuff[100];
+    socklen_t serverSize = sizeof(serverAddress);
+    int receive = recvfrom(clientSocket, receiveBuff, sizeof(receiveBuff)-1, 0, (sockaddr*)&serverAddress, &serverSize);
+
+    if(receive < 0) {
+        perror("ERROR on recvfrom");
+    }
+    
+    cout << "--------------------------------" << endl;
+    cout << "Received " << receive << " bytes." << endl;
+    receiveBuff[receive] = '\0';
+    cout << "Message: " << receiveBuff << endl;
+
     return 0;
 }
