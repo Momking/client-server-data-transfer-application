@@ -1,4 +1,5 @@
-#include <cstdint.h>
+// #include <cstdint.h>  // not working in my pc
+#include <stdint.h>
 #include <cstring>
 
 const uint8_t UAP_COMMAND_HELLO = 0;
