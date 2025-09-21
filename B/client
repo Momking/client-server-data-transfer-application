@@ -1,0 +1,5 @@
+#!/bin/bash
+
+g++ "client.cpp" "pack.cpp" "unpack.cpp" -I../include -o client.out
+./client.out $1 $2
+rm "./client.out"

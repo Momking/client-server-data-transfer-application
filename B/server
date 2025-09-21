@@ -1,0 +1,5 @@
+#!/bin/bash
+
+g++ "server.cpp" "pack.cpp" "unpack.cpp" -I../include -o server.out -pthread
+./server.out $1
+rm "./server.out"
