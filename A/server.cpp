@@ -1,206 +1,280 @@
 #include <iostream>
 #include <string>
 #include <map>
-#include <cstring>
+#include <vector>
 #include <cstdlib>
+#include <cstring>
+#include <algorithm>
+#include <iomanip>
+
+#include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#include <sys/time.h>
 #include <sys/select.h>
-#include <chrono>
-#include <algorithm>
 
 #include "../include/UAP_header.h"
 
 using namespace std;
 
+// Constants
+const int BUFFER_SIZE = 2048;
+const int SESSION_TIMEOUT_SECONDS = 10;
+
 struct Session {
     struct sockaddr_in client_addr;
-    int last_sequence_number = -1;
-    chrono::steady_clock::time_point last_message_time;
+    uint32_t expected_seq_num;
+    time_t last_message_time;
+    double total_latency;
+    int packet_count;
 };
 
-map<int32_t, Session> sessions;
-int64_t logical_clock_val = 0;
+// Global server state
+map<uint32_t, Session> sessions;
+uint64_t server_logical_clock = 0;
+uint32_t server_sequence_number = 0;
 
-// Function to unpack data from a buffer
-bool unpack(const char* buffer, int n, UAP_header& header, string& payload) {
-    if (n < sizeof(UAP_header)) {
-        return false;
-    }
-    const UAP_header* received_header = (const UAP_header*)buffer;
-
-    header.magic = ntohs(received_header->magic);
-    header.version = received_header->version;
-    header.command = received_header->command;
-    header.sequence_number = ntohl(received_header->sequence_number);
-    header.session_id = ntohl(received_header->session_id);
-    header.logical_clock = ntohll(received_header->logical_clock);
-    header.timestamp = ntohll(received_header->timestamp);
-
-    if (header.magic != UAP_MAGIC || header.version != UAP_VERSION) {
-        return false;
-    }
-
-    int payload_size = n - sizeof(UAP_header);
-    if (payload_size > 0) {
-        payload.assign(buffer + sizeof(UAP_header), payload_size);
-    } else {
-        payload.clear();
-    }
-    return true;
-}
-
-// Function to send a response to the client
-void send_response(int sock, const struct sockaddr_in& client_addr, uint8_t command, int32_t session_id) {
-    UAP_header response_header;
-    response_header.magic = htons(UAP_MAGIC);
-    response_header.version = UAP_VERSION;
-    response_header.command = command;
-    response_header.sequence_number = htonl(0); // Server sequence number not specified in detail
-    response_header.session_id = htonl(session_id);
-    logical_clock_val++;
-    response_header.logical_clock = htonll(logical_clock_val);
-    response_header.timestamp = htonll(chrono::duration_cast<chrono::nanoseconds>(chrono::system_clock::now().time_since_epoch()).count());
-
-    sendto(sock, &response_header, sizeof(response_header), 0, (struct sockaddr*)&client_addr, sizeof(client_addr));
-}
+// Function Prototypes
+void print_hex(uint32_t val);
+void send_uap_message(int sockfd, const struct sockaddr_in& addr, uint32_t session_id, uint8_t command, const string& payload = "");
+uint64_t get_current_microseconds();
+void close_session(int sockfd, uint32_t session_id, bool notify_client);
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         cerr << "Usage: " << argv[0] << " <portnum>" << endl;
         return 1;
     }
-
     int port = atoi(argv[1]);
 
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        perror("socket");
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("ERROR opening socket");
         return 1;
     }
 
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(port);
 
-    if (bind(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("bind");
-        close(sock);
+    if (bind(sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("ERROR on binding");
+        close(sockfd);
         return 1;
     }
 
     cout << "Waiting on port " << port << "..." << endl;
 
     while (true) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-        FD_SET(STDIN_FILENO, &read_fds);
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+        FD_SET(STDIN_FILENO, &readfds);
 
         struct timeval timeout;
-        timeout.tv_sec = 35; // Slightly longer timeout
+        timeout.tv_sec = 1;
         timeout.tv_usec = 0;
+        
+        int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 
-        int max_fd = max(sock, STDIN_FILENO);
-
-        int ret = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
-
-        if (ret < 0) {
-            perror("select");
+        if (activity < 0) {
+            perror("select error");
             break;
         }
 
-        // Check for stdin activity
-        if (FD_ISSET(STDIN_FILENO, &read_fds)) {
+        if (FD_ISSET(STDIN_FILENO, &readfds)) {
             string line;
-            getline(cin, line);
-            if (line == "q" || cin.eof()) {
-                cout << "Shutdown signal received from stdin. Sending GOODBYE to all clients." << endl;
-                for (auto const& [id, session] : sessions) {
-                    send_response(sock, session.client_addr, UAP_COMMAND_GOODBYE, id);
+            if (getline(cin, line)) {
+                if (line == "q") {
+                    cout << "Server shutting down by user command." << endl;
+                    break; 
                 }
+            } else { // EOF detected
+                cout << "Server shutting down by EOF on stdin." << endl;
                 break;
             }
         }
 
-        // Check for network activity
-        if (FD_ISSET(sock, &read_fds)) {
-            char buffer[2048];
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int n = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&client_addr, &client_len);
+        if (FD_ISSET(sockfd, &readfds)) {
+            char buffer[BUFFER_SIZE];
+            struct sockaddr_in cli_addr;
+            socklen_t clilen = sizeof(cli_addr);
 
+            int n = recvfrom(sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&cli_addr, &clilen);
             if (n < 0) {
-                perror("recvfrom");
+                perror("ERROR in recvfrom");
                 continue;
             }
 
-            UAP_header header;
-            string payload;
-            if (unpack(buffer, n, header, payload)) {
-                logical_clock_val = max(logical_clock_val, header.logical_clock) + 1;
-                auto it = sessions.find(header.session_id);
+            if (n < sizeof(UAP_header)) {
+                continue;
+            }
+            
+            uint64_t reception_time = get_current_microseconds();
 
-                if (it == sessions.end()) {
-                    if (header.command == UAP_COMMAND_HELLO) {
-                        cout << hex << "0x" << header.session_id << " [" << dec << header.sequence_number << "] Session created" << endl;
-                        sessions[header.session_id] = {client_addr, header.sequence_number, chrono::steady_clock::now()};
-                        send_response(sock, client_addr, UAP_COMMAND_HELLO, header.session_id);
-                    }
+            UAP_header* header = (UAP_header*)buffer;
+
+            if (ntohs(header->magic) != UAP_MAGIC || header->version != UAP_VERSION) {
+                continue;
+            }
+
+            server_logical_clock = max(server_logical_clock, ntohll(header->logical_clock)) + 1;
+            
+            // Calculate and Print One-Way Latency
+            uint64_t send_timestamp = ntohll(header->timestamp);
+            double latency_ms = (reception_time - send_timestamp) / 1000.0;
+            print_hex(ntohl(header->session_id));
+            cout << " [" << ntohl(header->sequence_number) << "] Latency: " << fixed << setprecision(2) << latency_ms << " ms" << endl;
+
+            uint32_t session_id = ntohl(header->session_id);
+            uint32_t client_seq_num = ntohl(header->sequence_number);
+            uint8_t command = header->command;
+            
+            auto it = sessions.find(session_id);
+            if (it == sessions.end()) {
+                if (command == UAP_COMMAND_HELLO) {
+                    print_hex(session_id);
+                    cout << " [" << client_seq_num << "] Session created" << endl;
+
+                    sessions[session_id] = {cli_addr, 1, time(nullptr), latency_ms, 1};
+                    
+                    send_uap_message(sockfd, cli_addr, session_id, UAP_COMMAND_HELLO);
                 } else {
-                    it->second.last_message_time = chrono::steady_clock::now();
-                    switch (header.command) {
-                        case UAP_COMMAND_DATA:
-                            if (header.sequence_number > it->second.last_sequence_number + 1) {
-                                for (int i = it->second.last_sequence_number + 1; i < header.sequence_number; ++i) {
-                                    cout << hex << "0x" << header.session_id << " [" << dec << i << "] Lost packet!" << endl;
-                                }
-                            }
-                            // Process data packet only if it's new
-                            if (header.sequence_number > it->second.last_sequence_number) {
-                                cout << hex << "0x" << header.session_id << " [" << dec << header.sequence_number << "] " << payload << endl;
-                                it->second.last_sequence_number = header.sequence_number;
-                            } else {
-                                cout << hex << "0x" << header.session_id << " [" << dec << header.sequence_number << "] Duplicate packet" << endl;
-                            }
-                            send_response(sock, client_addr, UAP_COMMAND_ALIVE, header.session_id);
-                            break;
-                        case UAP_COMMAND_GOODBYE:
-                            cout << hex << "0x" << header.session_id << " [" << dec << header.sequence_number << "] GOODBYE from client." << endl;
-                            send_response(sock, client_addr, UAP_COMMAND_GOODBYE, header.session_id); 
-                            cout << hex << "0x" << header.session_id << " Session closed" << endl;
-                            sessions.erase(it);
-                            break;
-                        case UAP_COMMAND_HELLO:
-                             // This is a protocol error according to the FSA
-                             cout << hex << "0x" << header.session_id << " Protocol error: HELLO received in active session. Closing session." << endl;
-                             send_response(sock, client_addr, UAP_COMMAND_GOODBYE, header.session_id);
-                             sessions.erase(it);
-                             break;
-                        default:
-                            break;
+                    // Per FSA, initial message must be HELLO, otherwise terminate
+                    // We don't have a session to terminate, so we just ignore.
+                }
+            } else {
+                Session& session = it->second;
+                session.last_message_time = time(nullptr);
+                
+                session.total_latency += latency_ms;
+                session.packet_count++;
+                
+                switch (command) {
+                    case UAP_COMMAND_DATA: {
+                        if (client_seq_num < session.expected_seq_num) {
+                            // "from the past", protocol error, close session
+                             print_hex(session_id);
+                             cout << " [" << client_seq_num << "] Out-of-order packet. Closing session." << endl;
+                             close_session(sockfd, session_id, true);
+                             continue;
+                        }
+                        if (client_seq_num == session.expected_seq_num - 1) {
+                            // Duplicate packet
+                            print_hex(session_id);
+                            cout << " [" << client_seq_num << "] Duplicate packet received." << endl;
+                            // Discard the packet, don't send ALIVE
+                            continue;
+                        }
+                        while (client_seq_num > session.expected_seq_num) {
+                            // Lost packets
+                            print_hex(session_id);
+                            cout << " [" << session.expected_seq_num << "] Lost packet!" << endl;
+                            session.expected_seq_num++;
+                        }
+
+                        // Print payload
+                        size_t payload_len = n - sizeof(UAP_header);
+                        string payload(buffer + sizeof(UAP_header), payload_len);
+                        print_hex(session_id);
+                        cout << " [" << client_seq_num << "] " << payload << endl;
+                        
+                        session.expected_seq_num = client_seq_num + 1;
+
+                        // Respond with ALIVE
+                        send_uap_message(sockfd, cli_addr, session_id, UAP_COMMAND_ALIVE);
+                        break;
+                    }
+                    case UAP_COMMAND_GOODBYE: {
+                        print_hex(session_id);
+                        cout << " [" << client_seq_num << "] GOODBYE from client." << endl;
+                        close_session(sockfd, session_id, true); // send GOODBYE back
+                        break;
+                    }
+                    case UAP_COMMAND_HELLO:
+                    default: {
+                        // Protocol error: e.g., HELLO received in established session
+                        print_hex(session_id);
+                        cout << " [" << client_seq_num << "] Protocol error. Closing session." << endl;
+                        close_session(sockfd, session_id, true);
+                        break;
                     }
                 }
             }
         }
-        
-        // Check for session timeouts
-        auto now = chrono::steady_clock::now();
-        for (auto it = sessions.begin(); it != sessions.end();) {
-            if (chrono::duration_cast<chrono::seconds>(now - it->second.last_message_time).count() > 30) {
-                cout << hex << "0x" << it->first << " Session timed out." << endl;
-                send_response(sock, it->second.client_addr, UAP_COMMAND_GOODBYE, it->first);
-                it = sessions.erase(it);
-            } else {
-                ++it;
+
+        // Check for Session Timeouts (Garbage Collection)
+        time_t now = time(nullptr);
+        vector<uint32_t> timed_out_sessions;
+        for (auto const& [id, sess] : sessions) {
+            if (now - sess.last_message_time > SESSION_TIMEOUT_SECONDS) {
+                timed_out_sessions.push_back(id);
             }
+        }
+        for (uint32_t id : timed_out_sessions) {
+            print_hex(id);
+            cout << " Session timed out." << endl;
+            close_session(sockfd, id, true);
         }
     }
 
-    close(sock);
+    // Server Shutdown: Send GOODBYE to all active sessions
+    cout << "Notifying active clients of shutdown..." << endl;
+    for (auto const& [id, sess] : sessions) {
+        send_uap_message(sockfd, sess.client_addr, id, UAP_COMMAND_GOODBYE);
+    }
+    sessions.clear();
+
+    close(sockfd);
     return 0;
+}
+
+
+void print_hex(uint32_t val) {
+    cout << "0x" << hex << setw(8) << setfill('0') << val << dec;
+}
+
+void send_uap_message(int sockfd, const struct sockaddr_in& addr, uint32_t session_id, uint8_t command, const string& payload) {
+    size_t buffer_len = sizeof(UAP_header) + payload.length();
+    char buffer[buffer_len];
+
+    UAP_header header;
+    header.magic = htons(UAP_MAGIC);
+    header.version = UAP_VERSION;
+    header.command = command;
+    header.sequence_number = htonl(server_sequence_number++);
+    header.session_id = htonl(session_id);
+
+    server_logical_clock++;
+    header.logical_clock = htonll(server_logical_clock);
+    header.timestamp = htonll(get_current_microseconds());
+
+    memcpy(buffer, &header, sizeof(UAP_header));
+    memcpy(buffer + sizeof(UAP_header), payload.c_str(), payload.length());
+
+    sendto(sockfd, buffer, buffer_len, 0, (const struct sockaddr*)&addr, sizeof(addr));
+}
+
+uint64_t get_current_microseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+
+void close_session(int sockfd, uint32_t session_id, bool notify_client) {
+    auto it = sessions.find(session_id);
+    if (it != sessions.end()) {
+        if (notify_client) {
+            send_uap_message(sockfd, it->second.client_addr, session_id, UAP_COMMAND_GOODBYE);
+        }
+        
+        // Print average latency for the closed session
+        double avg_latency = it->second.total_latency / it->second.packet_count;
+        print_hex(session_id);
+        cout << " Session closed (Avg Latency: " << fixed << setprecision(2) << avg_latency << " ms)" << endl;
+        
+        sessions.erase(it);
+    }
 }
