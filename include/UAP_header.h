@@ -1,4 +1,3 @@
-// #include <cstdint.h>  // not working in my pc
 #include <stdint.h>
 #include <cstring>
 
@@ -10,7 +9,7 @@ const uint8_t UAP_COMMAND_GOODBYE = 3;
 const uint16_t UAP_MAGIC = 0xC461;
 const uint8_t UAP_VERSION = 1;
 
-typedef struct {
+typedef struct __attribute__((packed)){
     uint16_t magic;
     uint8_t version;
     uint8_t command;

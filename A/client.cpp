@@ -143,13 +143,14 @@ int main(int argc, char* argv[]) {
             switch (state) {
                 case HELLO_WAIT:
                     if (header->command == UAP_COMMAND_HELLO) {
-                        cout << "[INFO] Session established with server." << endl;
+                        cout << "[INFO] Received HELLO from server. Session established." << endl;
                         state = READY;
                         timer_active = false;
                     }
                     break;
                 case READY_TIMER:
                     if (header->command == UAP_COMMAND_ALIVE) {
+                        cout << "[INFO] ["<<ntohl(header->sequence_number)<< "] ALIVE received from server." << endl;
                         state = READY;
                         timer_active = false;
                     }
