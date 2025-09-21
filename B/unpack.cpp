@@ -1,8 +1,9 @@
-#include "/include/UAP_header.h"
+#include "unpack.h"
+#include <arpa/inet.h>
+#include <cstring>
 
 bool unPack(const char* buffer, int n, UAP_header& header, std::string& payload) {
     if (n < sizeof(UAP_header)) {
-        cerr << "Packet too small to be a UAP message!" << endl;
         return false;
     }
 
@@ -17,7 +18,6 @@ bool unPack(const char* buffer, int n, UAP_header& header, std::string& payload)
     header.timestamp = ntohll(receivedHeader->timestamp);
 
     if (header.magic != UAP_MAGIC || header.version != UAP_VERSION) {
-        cerr << "Packet discarded: Invalid magic number or version." << endl;
         return false;
     }
     

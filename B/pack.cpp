@@ -1,4 +1,6 @@
-#include "/include/UAP_header.h"
+#include "pack.h"
+#include <arpa/inet.h>
+#include <cstring>
 
 void pack(char* buff, const std::string& payload, uint8_t command, int32_t seqNo, int32_t sessionID, int64_t logical_clock, int64_t timestamp)
 {

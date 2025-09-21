@@ -1,5 +1,7 @@
-#include <stdint.h>
-#include <cstring>
+#pragma once
+#include <cstdint>
+#include <arpa/inet.h>
+#include <string>
 
 const uint8_t UAP_COMMAND_HELLO = 0;
 const uint8_t UAP_COMMAND_DATA = 1;
@@ -9,7 +11,7 @@ const uint8_t UAP_COMMAND_GOODBYE = 3;
 const uint16_t UAP_MAGIC = 0xC461;
 const uint8_t UAP_VERSION = 1;
 
-typedef struct __attribute__((packed)){
+typedef struct __attribute__((packed)) {
     uint16_t magic;
     uint8_t version;
     uint8_t command;
