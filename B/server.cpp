@@ -44,6 +44,8 @@ public:
     mutex session_mutex;
     atomic<bool> is_done{false};
     steady_clock::time_point timeout_counter;
+    int64_t count = 0;
+    int64_t latency_sum = 0;
 
     queue<pair<UAP_header, string>> message_queue;
 
@@ -76,6 +78,7 @@ void handle_session(sessions &s) {
                 head = h;
                 payload = p;
                 s.message_queue.pop();
+                s.count++;
             }
 
             if(head.sequence_number != s.last_header.sequence_number + 1) {
@@ -84,11 +87,13 @@ void handle_session(sessions &s) {
                     {
                         lock_guard<mutex> lock(global_mutex);
                         clk = max(clk, head.logical_clock) + 1;
-                        pack(buffer, "", UAP_COMMAND_GOODBYE, global_squence_no, s.session_id, clk, get_current_time());
+                        int64_t t1 = get_current_time();
+                        pack(buffer, "", UAP_COMMAND_GOODBYE, global_squence_no, s.session_id, clk, t1);
+                        cout << "One-way Latency: " << t1 - head.timestamp << endl;
+                        s.latency_sum += (t1 - head.timestamp);
                         global_squence_no++;
                     }
                     int send = sendto(s.server_socket, buffer, sizeof(UAP_header), 0, (struct sockaddr*)&s.client_addr, sizeof(s.client_addr));
-                    cout << "out of order packet, closing session" << endl;
                     break;
                 }else if(head.sequence_number == s.last_header.sequence_number) {
                     cout << "duplicate packet" << endl;
@@ -105,7 +110,10 @@ void handle_session(sessions &s) {
                 {
                     lock_guard<mutex> lock(global_mutex);
                     clk = max(clk, head.logical_clock) + 1;
-                    pack(buffer, "", UAP_COMMAND_GOODBYE, global_squence_no, s.session_id, clk, get_current_time());
+                    int64_t t1 = get_current_time();
+                    pack(buffer, "", UAP_COMMAND_GOODBYE, global_squence_no, s.session_id, clk, t1);
+                    cout << "One-way Latency: " << t1 - head.timestamp << endl;
+                    s.latency_sum += (t1 - head.timestamp);
                     global_squence_no++;
                 }
                 int send = sendto(s.server_socket, buffer, sizeof(UAP_header), 0, (struct sockaddr*)&s.client_addr, sizeof(s.client_addr));
@@ -119,7 +127,10 @@ void handle_session(sessions &s) {
             {
                 lock_guard<mutex> lock(global_mutex);
                 clk = max(clk, head.logical_clock) + 1;
-                pack(buffer, "", UAP_COMMAND_ALIVE, head.sequence_number, s.session_id, clk, get_current_time());
+                int64_t t1 = get_current_time();
+                pack(buffer, "", UAP_COMMAND_ALIVE, head.sequence_number, s.session_id, clk, t1);
+                cout << "One-way Latency: " << t1 - head.timestamp << " | " << head.timestamp << " | " << t1 << endl;
+                s.latency_sum += (t1 - head.timestamp);
                 global_squence_no++;
             }
             s.timeout_counter = steady_clock::now();
@@ -129,13 +140,15 @@ void handle_session(sessions &s) {
             
         }else {
             auto elapsed = duration_cast<seconds>(steady_clock::now() - s.timeout_counter).count();
-            // cout << "Time since last message: " << elapsed<< " seconds" << endl;
             if(elapsed > 10) {
                 char buffer[sizeof(UAP_header)];
                 {
                     lock_guard<mutex> lock(global_mutex);
                     clk = max(clk, s.last_header.logical_clock) + 1;
-                    pack(buffer, "", UAP_COMMAND_GOODBYE, global_squence_no, s.session_id, clk, get_current_time());
+                    int64_t t1 = get_current_time();
+                    pack(buffer, "", UAP_COMMAND_GOODBYE, global_squence_no, s.session_id, clk, t1);
+                    cout << "One-way Latency: " << t1 - s.last_header.timestamp << endl;
+                    s.latency_sum += (t1 - s.last_header.timestamp);
                     global_squence_no++;
                 }
                 int send = sendto(s.server_socket, buffer, sizeof(UAP_header), 0, (struct sockaddr*)&s.client_addr, sizeof(s.client_addr));
@@ -144,6 +157,8 @@ void handle_session(sessions &s) {
         }
     }
     s.is_done = true;
+
+    cout << "Average Latency for session " << s.session_id << ": " << (s.count ? (s.latency_sum / s.count) : 0) << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -172,12 +187,7 @@ int main(int argc, char* argv[]) {
 
         int max_fd = max(server_socket, STDIN_FILENO);
 
-        // cout << session_threads.size() << " active sessions. Type 'q' to quit." << endl;
-
-        // cout << "Waiting for activity..." << endl;
         int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
-
-        // cout << "Select returned: " << activity << endl;
 
         if (activity < 0) {
             perror("select error");
@@ -195,19 +205,15 @@ int main(int argc, char* argv[]) {
         }
 
         if (FD_ISSET(server_socket, &read_fds)) {
-            // cout << "Socket is readable" << endl;
 
             struct sockaddr_in client_addr;
             socklen_t client_addr_len = sizeof(client_addr);
-            // cout << "Waiting for data..." << endl;
 
             char buffer[1024];
             int n = recvfrom(server_socket, buffer, sizeof(buffer), 0, (struct sockaddr*)&client_addr, &client_addr_len);
             if (n < 0) {
                 continue;
             }
-
-            // cout << "Data received from " << inet_ntoa(client_addr.sin_addr) << ":" << ntohs(client_addr.sin_port) << endl;
 
             string payload = "";
             UAP_header header;
@@ -220,11 +226,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            cout << "Timestamp: " << header.timestamp << endl;
-            cout << "Logical Clock: " << header.logical_clock << endl;
-
             if(header.command == UAP_COMMAND_HELLO) {
-                cout << "Received HELLO from " << inet_ntoa(client_addr.sin_addr) << ":" << ntohs(client_addr.sin_port) << " " << header.session_id << endl;
                 const int32_t session_id_copy = header.session_id;
                 if (session_threads.find(session_id_copy) == session_threads.end()) {
                     session_threads[session_id_copy] = make_unique<sessions>(session_id_copy, server_socket, client_addr, header);
@@ -232,15 +234,11 @@ int main(int argc, char* argv[]) {
                     cout << "Session ID already exists, ignoring HELLO" << endl;
                 }
             }else if(header.command == UAP_COMMAND_DATA) {
-                cout << "Received DATA from " << inet_ntoa(client_addr.sin_addr) << ":" << ntohs(client_addr.sin_port) << endl;
                 if(session_threads.find(header.session_id) != session_threads.end()) {
-                    cout << "Session ID: " << header.session_id << endl;
                     session_threads[header.session_id]->message_queue.push({header, payload});
                 }
             }else if (header.command == UAP_COMMAND_GOODBYE) {
-                cout << "Received GOODBYE from " << inet_ntoa(client_addr.sin_addr) << ":" << ntohs(client_addr.sin_port) << endl;
                 if(session_threads.find(header.session_id) != session_threads.end()) {
-                    cout << "Session ID: " << header.session_id << endl;
                     session_threads[header.session_id]->message_queue.push({header, ""});
                 }
             }

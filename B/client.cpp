@@ -88,19 +88,14 @@ int main(int argc, char* argv[]) {
         }
 
         if(header.command == UAP_COMMAND_HELLO) {
-            cout << "Received HELLO" << endl;
             current_state = READY;
         }else{
-            cout << "Unexpected response to HELLO" << endl;
             close(clientSocket);
             return 1;
         }
 
-        cout << "Timestamp: " << header.timestamp << endl;
-        cout << "Logical Clock: " << header.logical_clock << endl;
         last_header = header;
     }else{
-        cout << "Timeout waiting for HELLO response" << endl;
         close(clientSocket);
         return 1;
     }
@@ -139,7 +134,6 @@ int main(int argc, char* argv[]) {
                 int send = sendto(clientSocket, buffer, sizeof(buffer), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
                 if(send < 0) { perror("sendto"); break; }
                 current_state = READY_TIMER;
-                cout << "Sent DATA: " << input_buffer << endl;
             }
         }else if (cin.eof()) {
             current_state = CLOSING;
@@ -148,7 +142,6 @@ int main(int argc, char* argv[]) {
 
         if(FD_ISSET(clientSocket, &readfds)) {
             deadline = steady_clock::now() + seconds(10);
-            // cout << "Resetting deadline to 10 seconds from now." << endl;
             char buffer[1024];
             struct sockaddr_in from_addr;
             socklen_t from_len = sizeof(from_addr);
@@ -167,17 +160,13 @@ int main(int argc, char* argv[]) {
             }
 
             if(header.command == UAP_COMMAND_ALIVE) {
-                cout << "Received ALIVE" << endl;
                 if(current_state == READY_TIMER) {
                     current_state = READY;
                 }
             }else if(header.command == UAP_COMMAND_GOODBYE) {
-                cout << "Received GOODBYE" << endl;
                 current_state = CLOSING;
             }
 
-            cout << "Timestamp: " << header.timestamp << endl;
-            cout << "Logical Clock: " << header.logical_clock << endl;
             last_header = header;
         }
     }
