@@ -132,10 +132,10 @@ int main(int argc, char* argv[]) {
             double latency_ms = (reception_time - send_timestamp) / 1000.0;
             total_latency += latency_ms;
             packet_count++;
-            cout << "[INFO] Latency: " << fixed << setprecision(2) << latency_ms << " ms" << endl;
+            cout << "Latency: " << fixed << setprecision(2) << latency_ms << " ms" << endl;
             
             if (header->command == UAP_COMMAND_GOODBYE) {
-                cout << "[INFO] Received GOODBYE from server. Closing." << endl;
+                cout << "Received GOODBYE from server. Closing." << endl;
                 state = CLOSED;
                 continue;
             }
@@ -143,14 +143,14 @@ int main(int argc, char* argv[]) {
             switch (state) {
                 case HELLO_WAIT:
                     if (header->command == UAP_COMMAND_HELLO) {
-                        cout << "[INFO] Received HELLO from server. Session established." << endl;
+                        cout << "Received HELLO from server. Session established." << endl;
                         state = READY;
                         timer_active = false;
                     }
                     break;
                 case READY_TIMER:
                     if (header->command == UAP_COMMAND_ALIVE) {
-                        cout << "[INFO] ["<<ntohl(header->sequence_number)<< "] ALIVE received from server." << endl;
+                        cout << "["<<ntohl(header->sequence_number)<< "] ALIVE received from server." << endl;
                         state = READY;
                         timer_active = false;
                     }
@@ -185,7 +185,7 @@ int main(int argc, char* argv[]) {
             if (elapsed >= RESPONSE_TIMEOUT_SECONDS) {
                 timer_active = false;
                 if (state == CLOSING) {
-                    cout << "[INFO] GOODBYE response timed out. Closing." << endl;
+                    cout << "GOODBYE response timed out. Closing." << endl;
                     state = CLOSED;
                 } else { // Timeout in HELLO_WAIT or READY_TIMER
                     cout << "[ERROR] Server response timed out. Sending GOODBYE." << endl;
@@ -203,10 +203,10 @@ int main(int argc, char* argv[]) {
 
     if (packet_count > 0) {
         double avg_latency = total_latency / packet_count;
-        cout << "[INFO] Average one-way latency: " << fixed << setprecision(2) << avg_latency << " ms" << endl;
+        cout << "Average one-way latency: " << fixed << setprecision(2) << avg_latency << " ms" << endl;
     }
     
-    cout << "[INFO] Client shut down." << endl;
+    cout << "Client shut down." << endl;
     exit(0);
 }
 
